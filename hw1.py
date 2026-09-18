@@ -20,7 +20,6 @@ QUERIES = (QUERY_1, QUERY_2)
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".webp"}
 DUMMY_RESPONSE = "please design your chain to answer these two queries."
 
-
 def load_env_file(path: Path = Path(".env")) -> None:
     """Load the simple KEY=VALUE entries used by this homework."""
     if not path.is_file():
@@ -63,7 +62,87 @@ def build_chain() -> Any:
     ``deepseek-v4-flash-vision-exp``. The API key is loaded from .env.
     """
     ### YOUR CODE HERE
-    return None
+    from langchain_core.prompts import ChatPromptTemplate
+    from langchain_core.output_parsers import JsonOutputParser
+    from langchain_core.runnables import RunnableLambda
+    from langchain_deepseek import ChatDeepSeek
+    import logging
+
+    logger = logging.getLogger(__name__)
+
+    # 失败时的安全默认值，防止程序崩溃
+    FAILED_RESULT = {
+        "amount_paid_after_rounding": 0.0,
+        "subtotal_after_discounts_before_rounding": 0.0,
+        "discount_total": 0.0,
+        "amount_without_discounts": 0.0,
+    }
+
+    llm = ChatDeepSeek(
+        model="deepseek-v4-flash-vision-exp",
+        temperature=0,
+    )
+
+    prompt_parse = ChatPromptTemplate.from_messages([
+        ("system", """You are an expert receipt parser. Read the receipt image and extract EXACTLY THREE numbers.
+
+1) amount_paid_after_rounding
+   - The final amount the customer actually paid (the last payable line on the receipt).
+   - This is the value AFTER any rounding adjustment.
+   - Common labels: "Amount Paid", "Total Paid", "Net Total", "应付款".
+
+2) subtotal_after_discounts_before_rounding
+   - The subtotal AFTER discounts/coupons have been subtracted, but BEFORE any rounding adjustment.
+   - Common labels: "Subtotal", "Net", "Sub-total after discount", "折后小计".
+   - If the receipt only shows a single "Subtotal" plus discount lines, this is (raw subtotal - sum of discounts).
+
+3) discount_total
+   - The SUM of all discount / coupon / savings amounts, taken as POSITIVE numbers.
+   - If there are no discounts, use 0.
+
+CRITICAL RULES:
+- Do NOT output amount_without_discounts; the caller will compute it.
+- Do NOT include currency symbols (HK$, $) or thousands separators (,).
+- Output numbers as plain decimals (e.g. 102.31, not "102.31" with commas).
+- Output ONLY a valid JSON object. No markdown fences, no commentary, no leading/trailing text.
+
+Required JSON schema:
+{{"amount_paid_after_rounding": <float>, "subtotal_after_discounts_before_rounding": <float>, "discount_total": <float>}}
+
+Example output:
+{{"amount_paid_after_rounding": 102.30, "subtotal_after_discounts_before_rounding": 102.31, "discount_total": 5.39}}"""),
+        ("human", [
+            {"type": "text", "text": "Extract the three amounts from this receipt image."},
+            {"type": "image_url", "image_url": {"url": "{image_data}"}},
+        ]),
+    ])
+
+    parse_chain = prompt_parse | llm | JsonOutputParser()
+
+    def _safe_finalize(parsed: Any) -> dict:
+        """安全提取字段并计算第四个值，绝不让链条崩溃。"""
+        if not isinstance(parsed, dict):
+            logger.warning("Parse returned non-dict: %r", parsed)
+            return dict(FAILED_RESULT)
+        try:
+            subtotal = float(parsed["subtotal_after_discounts_before_rounding"])
+            discount = float(parsed["discount_total"])
+            paid = float(parsed["amount_paid_after_rounding"])
+            return {
+                "amount_paid_after_rounding": paid,
+                "subtotal_after_discounts_before_rounding": subtotal,
+                "discount_total": discount,
+                "amount_without_discounts": round(subtotal + discount, 2),
+            }
+        except (KeyError, TypeError, ValueError) as e:
+            logger.warning("Missing/invalid field: %s | parsed=%r", e, parsed)
+            return dict(FAILED_RESULT)
+
+    # 加上 with_fallbacks 兜底 API 网络异常
+    return parse_chain | RunnableLambda(_safe_finalize).with_fallbacks(
+        [RunnableLambda(lambda _: dict(FAILED_RESULT))]
+    )
+
 
 
 def answer_queries(chain: Any, images: list[Path]) -> dict[str, Any]:
@@ -78,10 +157,27 @@ def answer_queries(chain: Any, images: list[Path]) -> dict[str, Any]:
     multimodal human messages. LangChain's ``batch`` method is one simple way
     to process independent receipt-extraction prompts in parallel.
     """
-    ### YOUR CODE HERE
-    _ = (chain, images)
-    return {QUERY_1: DUMMY_RESPONSE, QUERY_2: DUMMY_RESPONSE}
+    # 1. 构造批量输入　
+    inputs = [{"image_data": image_data_url(path)} for path in images]
 
+    # 2. 并行执行多个图片的链条（非逐个执行）
+    results: list[dict[str, Any]] = chain.batch(inputs)
+
+    # 3. 用 Python 的 Decimal 精确求和（不用大模型算）
+    total_paid = sum(
+        (Decimal(str(r.get("amount_paid_after_rounding", 0.0))) for r in results if r),
+        Decimal("0"),
+    )
+    total_without_discount = sum(
+        (Decimal(str(r.get("amount_without_discounts", 0.0))) for r in results if r),
+        Decimal("0"),
+    )
+
+    # 4. 按题目要求返回，确保只包含一个金额数字，格式如 "HK$1974.30"
+    return {
+        QUERY_1: f"{total_paid:.2f}",
+        QUERY_2: f"{total_without_discount:.2f}",
+    }
 
 # Everything below is provided runner/scoring code. No edits are needed.
 

@@ -48,6 +48,17 @@ DeepSeek Flash model. JPEG, PNG, GIF, and WebP inputs are accepted by the
 homework runner.
 
 
-## Homework 1 solution: 
-> to students: please fill your solution description here.
+## Homework 1 solution
+
+![Chain design visualization](Chain_design_visualization.png)
+
+### Solution description
+
+This solution is designed as “one independent parallel chain per receipt image” because different receipts have no dependencies on one another and can be processed simultaneously, reducing the total time spent waiting for the model to read each image one by one. At the same time, if one chain fails, it will not block the other receipts, so the whole batch can still complete.
+
+Within each chain, a multimodal prompt is first constructed, combining strict extraction instructions with the receipt image and passing them to the vision model. The purpose is to let the model both see the image and be explicitly constrained to output only a JSON object containing three amounts, reducing format drift and irrelevant content. The model is responsible only for visual extraction, not arithmetic, because large models are unreliable at numerical computation.
+
+The program then parses the JSON and performs safe finalization: it validates the three fields, computes `amount_without_discounts = subtotal_after_discounts_before_rounding + discount_total`, and falls back to zero values if parsing fails or fields are missing. The reason for this design is to separate “reading the image” from “calculation/validation,” letting deterministic code handle amount derivation and fault tolerance, so that a single bad image or abnormal output does not crash the entire program.
+
+After all parallel chains finish, the program uses exact `Decimal` arithmetic to sum the amount paid and the amount without discounts separately, rather than letting the LLM perform addition, because financial amounts cannot tolerate floating-point errors. Finally, it returns the two totals required by the queries.
 
