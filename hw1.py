@@ -70,7 +70,7 @@ def build_chain() -> Any:
 
     logger = logging.getLogger(__name__)
 
-    # 失败时的安全默认值，防止程序崩溃
+    # Safe Defaults on Failure to Prevent Program Crashes
     FAILED_RESULT = {
         "amount_paid_after_rounding": 0.0,
         "subtotal_after_discounts_before_rounding": 0.0,
@@ -120,7 +120,7 @@ Example output:
     parse_chain = prompt_parse | llm | JsonOutputParser()
 
     def _safe_finalize(parsed: Any) -> dict:
-        """安全提取字段并计算第四个值，绝不让链条崩溃。"""
+        """Safely extract fields and compute the fourth value, never letting the chain crash."""
         if not isinstance(parsed, dict):
             logger.warning("Parse returned non-dict: %r", parsed)
             return dict(FAILED_RESULT)
@@ -138,7 +138,7 @@ Example output:
             logger.warning("Missing/invalid field: %s | parsed=%r", e, parsed)
             return dict(FAILED_RESULT)
 
-    # 加上 with_fallbacks 兜底 API 网络异常
+    # Add with_fallbacks as a Fallback for API Network Exceptions
     return parse_chain | RunnableLambda(_safe_finalize).with_fallbacks(
         [RunnableLambda(lambda _: dict(FAILED_RESULT))]
     )
@@ -157,13 +157,13 @@ def answer_queries(chain: Any, images: list[Path]) -> dict[str, Any]:
     multimodal human messages. LangChain's ``batch`` method is one simple way
     to process independent receipt-extraction prompts in parallel.
     """
-    # 1. 构造批量输入　
+    # 1. Construct Batch Input　
     inputs = [{"image_data": image_data_url(path)} for path in images]
 
-    # 2. 并行执行多个图片的链条（非逐个执行）
+    # 2. Execute Multiple Image Chains in Parallel (Not One by One)
     results: list[dict[str, Any]] = chain.batch(inputs)
 
-    # 3. 用 Python 的 Decimal 精确求和（不用大模型算）
+    # 3. Exact Summation Using Python’s Decimal (Without Using a Large Model to Compute)
     total_paid = sum(
         (Decimal(str(r.get("amount_paid_after_rounding", 0.0))) for r in results if r),
         Decimal("0"),
@@ -173,7 +173,6 @@ def answer_queries(chain: Any, images: list[Path]) -> dict[str, Any]:
         Decimal("0"),
     )
 
-    # 4. 按题目要求返回，确保只包含一个金额数字，格式如 "HK$1974.30"
     return {
         QUERY_1: f"{total_paid:.2f}",
         QUERY_2: f"{total_without_discount:.2f}",
